@@ -263,6 +263,36 @@ input.field:focus{border-color:var(--gold2)}
    <p class="build">AKW Aesthetics · Demo build 0.1.0 (2026-05-31)</p>
   </div>
  </div>
+</section><section class="view" data-view="setup" hidden>
+  <div class="status"><span class="clock">9:41</span><div class="status-icons"></div></div>
+  <div class="page">
+   <span class="kicker">Welcome</span>
+   <h2 class="title" style="font-size:26px;margin-top:4px">Let's set up your account</h2>
+   <p class="copy" style="max-width:none;text-align:left;margin:6px 0 14px">Just a few details so the clinic can look after you properly. Your information is kept securely and used only for your care.</p>
+
+   <div class="field-wrap"><div class="label">Full name</div><input id="suName" class="field" type="text" placeholder="Your name"></div>
+   <div class="field-wrap"><div class="label">Mobile number</div><input id="suPhone" class="field" type="tel" autocomplete="tel" placeholder="07…"></div>
+   <div class="field-wrap"><div class="label">Date of birth</div><input id="suDob" class="field" type="date"></div>
+
+   <div class="field-wrap"><div class="label">Address</div><input id="suAddr1" class="field" type="text" placeholder="Address line 1" style="margin-bottom:8px"><input id="suAddrCity" class="field" type="text" placeholder="Town / city" style="margin-bottom:8px"><input id="suAddrPostcode" class="field" type="text" placeholder="Postcode"></div>
+
+   <div class="field-wrap"><div class="label">Emergency contact</div><input id="suEmName" class="field" type="text" placeholder="Contact name" style="margin-bottom:8px"><input id="suEmPhone" class="field" type="tel" placeholder="Contact number"></div>
+
+   <div class="consent" style="margin-top:6px">
+     <span class="kicker">Your agreement</span>
+     <div class="consent-row" style="margin-top:8px">
+       <div class="toggle off" id="suTerms" onclick="tog(this)"></div>
+       <p><b>I agree to the terms and privacy policy</b>Read how your data is stored and used. <a id="suPrivacyLink" href="javascript:void(0)" style="color:var(--gold2)">View privacy policy</a></p>
+     </div>
+     <div class="consent-row">
+       <div class="toggle off" id="suMarketing" onclick="tog(this)"></div>
+       <p><b>Keep me updated by email (optional)</b>Offers and clinic news. You can opt out any time, and this is not required to use the app.</p>
+     </div>
+   </div>
+
+   <button class="button" style="letter-spacing:.1em;margin-top:6px" onclick="submitSetup()">Save &amp; continue</button>
+   <p class="note" style="text-align:center">You can update these details later in your account.</p>
+  </div>
 </section><section class="view" data-view="home" hidden>
  <div class="screen">
   <div class="status"><span class="clock">9:41</span><div class="status-icons"><button class="envelope" onclick="openMessages()" aria-label="Messages">&#9993;<span class="dot">2</span></button><button class="dots" onclick="menu(event)" aria-label="Menu">⋮</button></div></div>
@@ -661,11 +691,13 @@ function loadSessionContext(){
     if(!SESSION.user) return;
     return Promise.all([
       sb.from('staff').select('id,clinic_id').maybeSingle(),
-      sb.from('clients').select('id,clinic_id').maybeSingle()
+      sb.from('clients').select('id,clinic_id,onboarded_at,full_name,phone').maybeSingle()
     ]).then(function(res){
       var st=res[0].data, cl=res[1].data;
       SESSION.isStaff = !!st;
       SESSION.clientId = cl ? cl.id : null;
+      SESSION.onboarded = cl ? !!cl.onboarded_at : false;
+      SESSION.client = cl || null;
       SESSION.clinicId = (st && st.clinic_id) || (cl && cl.clinic_id) || SESSION.clinicId;
     });
   });
@@ -971,6 +1003,62 @@ function bookingSuccessUI(){
   document.querySelector('.view[data-view="book"] .page').scrollTop=0;
 }
 
+/* Pre-fill the setup screen with anything we already know (name/phone may have
+   come from signup metadata via the trigger). */
+function prefillSetup(){
+  var c = SESSION.client || {};
+  var set=function(id,v){ var el=document.getElementById(id); if(el && v) el.value=v; };
+  set('suName', c.full_name);
+  set('suPhone', c.phone);
+  // wire the privacy link to the real policy once it exists
+  var pl=document.getElementById('suPrivacyLink');
+  if(pl && CLINIC.developer && CLINIC.privacyUrl){ pl.href = CLINIC.privacyUrl; pl.target='_blank'; }
+}
+
+/* Save first-run setup. Writes profile + agreement + (optional) marketing
+   consent to the client's own row, stamps timestamps, then enters the app.
+   Marketing is opt-in and unbundled — not required to proceed. */
+function submitSetup(){
+  var val=function(id){ var el=document.getElementById(id); return el?el.value.trim():''; };
+  var on=function(id){ var el=document.getElementById(id); return !!(el && el.classList.contains('on')); };
+
+  var name=val('suName'), phone=val('suPhone'), dob=val('suDob');
+  var termsOk=on('suTerms');
+  if(!name){ toast('Please enter your name'); return; }
+  if(!termsOk){ toast('Please agree to the terms to continue'); return; }
+
+  var marketing=on('suMarketing');
+  var addr = {
+    line1: val('suAddr1'), city: val('suAddrCity'), postcode: val('suAddrPostcode')
+  };
+  var payload = {
+    full_name: name,
+    phone: phone || null,
+    date_of_birth: dob || null,
+    address: (addr.line1||addr.city||addr.postcode) ? addr : null,
+    emergency_contact_name: val('suEmName') || null,
+    emergency_contact_phone: val('suEmPhone') || null,
+    terms_agreed_at: new Date().toISOString(),
+    marketing_consent: marketing,
+    marketing_consent_at: new Date().toISOString(),
+    onboarded_at: new Date().toISOString()
+  };
+
+  if(!sb || !SESSION.clientId){
+    // demo fallback (no live session)
+    SESSION.onboarded = true; loadLoyalty&&loadLoyalty(); go('home'); syncBadge();
+    toast('Setup saved (demo)'); return;
+  }
+  toast('Saving…');
+  sb.from('clients').update(payload).eq('id', SESSION.clientId).then(function(r){
+    if(r.error){ toast('Could not save: '+r.error.message); return; }
+    SESSION.onboarded = true;
+    loadLoyalty(); loadMessages();
+    go('home'); syncBadge();
+    toast('All set — welcome!');
+  });
+}
+
 function resetBooking(){
   document.getElementById('bookSuccess').classList.remove('show');
   document.getElementById('bookForm').style.display='';
@@ -1101,13 +1189,17 @@ function signUp(){
 function afterAuth(){
   loadSessionContext().then(function(){
     if(SESSION.isStaff){
-      // Admin screen is HIV-269 (not built yet). For now, land on home + flag.
       toast('Signed in as staff — admin view coming soon');
+      go('home'); syncBadge();
+    } else if(!SESSION.onboarded){
+      // New/incomplete client → first-run setup before entering the app.
+      prefillSetup();
+      go('setup');
     } else {
       loadLoyalty();
       loadMessages();
+      go('home'); syncBadge();
     }
-    go('home'); syncBadge();
   });
 }
 
